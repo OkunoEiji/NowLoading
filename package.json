@@ -57,6 +57,8 @@
 		"wrangler": "^4.63.0"
 	},
 	"dependencies": {
-		"@prisma/client": "^7.4.2"
+		"@prisma/adapter-pg": "^7.4.2",
+		"@prisma/client": "^7.4.2",
+		"svelte-clerk": "^1.0.0"
 	}
 }

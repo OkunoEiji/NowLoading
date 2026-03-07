@@ -11,6 +11,6 @@
 		"sourceMap": true,
 		"strict": true,
 		"moduleResolution": "bundler",
-		"types": ["./worker-configuration.d.ts"]
+		"types": ["svelte-clerk/env", "./worker-configuration.d.ts"]
 	}
 }
