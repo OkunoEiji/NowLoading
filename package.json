@@ -57,8 +57,10 @@
 		"wrangler": "^4.63.0"
 	},
 	"dependencies": {
+		"@lucide/svelte": "^0.577.0",
 		"@prisma/adapter-pg": "^7.4.2",
 		"@prisma/client": "^7.4.2",
+		"lucide-svelte": "^0.577.0",
 		"svelte-clerk": "^1.0.0"
 	}
 }
