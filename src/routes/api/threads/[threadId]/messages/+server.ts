@@ -11,10 +11,7 @@ export const GET: RequestHandler = async ({ params, url }) => {
 
     // スレッドが存在するか確認
     const thread = await prisma.thread.findUnique({
-        where: { 
-            id: threadId,
-            ...(includeDeleted ? {} : { deletedAt: null })
-        },
+        where: { id: threadId },
         select: { id: true }
     });
 
