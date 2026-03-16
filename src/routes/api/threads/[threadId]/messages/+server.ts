@@ -5,13 +5,16 @@ import { prisma } from '$lib/server/prisma';
 export const GET: RequestHandler = async ({ params, url }) => {
     const threadId = Number(params.threadId);
 
-    if (!Number.isInteger(threadId) || threadId <= 0) {
-        throw error(400, '無効なスレッドIDです。');
-    }
+    if (!Number.isInteger(threadId) || threadId <= 0) throw error(400, '無効なスレッドIDです。');
+
+    const includeDeleted = url.searchParams.get('includeDeleted') === 'true';
 
     // スレッドが存在するか確認
     const thread = await prisma.thread.findUnique({
-        where: { id: threadId },
+        where: { 
+            id: threadId,
+            ...(includeDeleted ? {} : { deletedAt: null })
+        },
         select: { id: true }
     });
 
@@ -26,7 +29,7 @@ export const GET: RequestHandler = async ({ params, url }) => {
     const messages = await prisma.message.findMany({
         where: { 
             threadId,
-            deletedAt: null
+            ...(includeDeleted ? {} : { deletedAt: null })
         },
         orderBy: { id: 'asc' },
         take: limit,
@@ -37,6 +40,7 @@ export const GET: RequestHandler = async ({ params, url }) => {
             authorId: true,
             content: true,
             updatedAt: true,
+            deletedAt: true,
             author: {
                 select: { username: true }
             }
@@ -50,6 +54,7 @@ export const GET: RequestHandler = async ({ params, url }) => {
         authorUserName: message.author?.username,
         content: message.content,
         updatedAt: message.updatedAt,
+        deletedAt: message.deletedAt
     }));
 
     return json(payload);
