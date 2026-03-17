@@ -1,6 +1,7 @@
 <script lang="ts">
     import { page } from '$app/state';
     import { browser } from '$app/environment';
+	import { MySqlFloat } from 'drizzle-orm/mysql-core';
 
     type PageData = {
         dbUser?: {
@@ -11,7 +12,8 @@
     const { data }: { data: PageData } = $props();
     const threadId = $derived(page.params.threadId);
 
-    let messages = $state<Array<{
+    // メッセージの型定義
+    type Message = {
         id: number;
         threadId: number;
         authorId: number;
@@ -19,13 +21,18 @@
         content: string;
         updatedAt: string;
         deletedAt: string | null;
-    }>>([]);
+    };
 
+    let messages = $state<Message[]>([]);
     let loading = $state(true);
     let error = $state<string | null>(null);
     let result = $state<string | null>(null);
     let editingId = $state<number | null>(null);
     let editContent = $state('');
+    // WebSocket インスタンス
+    let socket = $state<WebSocket | null>(null);
+    // 新規メッセージ入力欄
+    let draft = $state('');
 
     const dbUser = $derived(data?.dbUser);
 
@@ -50,18 +57,30 @@
         const ws = new WebSocket(
             `ws://localhost:3001/ws?token=${encodeURIComponent(token)}`
         );
+        socket = ws;
+
+        ws.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                if (msg.type === 'message-created') {
+                    const created = msg.message as Message;
+                    if (String(created.threadId) === String(threadId)) {
+                        messages = [...messages, created];
+                    }
+                }
+            } catch (e) {
+                console.error('failed to parse ws message', e);
+            }
+        };
         
         ws.onopen = () => {
             console.log('WebSocket connected');
             result = 'WebSocket: 接続成功';
         };
 
-        ws.onmessage = (event) => {
-            console.log('WS message', event.data);
-        };
-
         ws.onclose = () => {
             console.log("WebSocket closed");
+            socket = null;
         };
 
         ws.onerror = (error) => {
@@ -70,6 +89,7 @@
         };  
     }
 
+    // メッセージ一覧を取得(削除済みも含める)
     async function loadMessages() {
         if (!threadId) return;
 
@@ -92,6 +112,7 @@
         if (threadId) loadMessages();
     });
 
+    // メッセージを削除
     async function deleteMessage(messageId: number) {
         result = null;
         try {
@@ -105,6 +126,7 @@
         }
     }
 
+    // メッセージを編集
     async function saveEdit(messageId: number) {
         result = null;
         try {
@@ -124,6 +146,7 @@
         }
     }
 
+    // メッセージを復元
     async function restoreMessage(messageId: number) {
         result = null;
         try {
@@ -141,6 +164,65 @@
         editingId = msg.id;
         editContent = msg.content;
     }
+
+    async function sendMessageViaRest() {
+        if (!draft.trim()) return;
+        // メッセージ作成用の POST エンドポイントを用意（例）
+        const res = await fetch(`/api/threads/${threadId}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: draft.trim() })
+        });
+        if (!res.ok) {
+            result = '送信エラー: ' + (await res.text());
+            return;
+        }
+        const created = await res.json(); // DB に保存されたメッセージ
+        // 1. 画面に即時反映（楽観的UI）
+        messages = [...messages, created];
+
+        // 2. WebSocket がつながっていれば「新着通知」を流す
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+                type: 'message-created',
+                threadId: created.threadId,
+                message: created
+            }));
+        }
+
+        draft = '';
+    }
+
+    async function sendMessage() {
+        if (!draft.trim()) return;
+
+        // 1. REST でメッセージ作成（+server.ts 側に POST を用意しておく）
+        const res = await fetch(`/api/threads/${threadId}/messages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: draft.trim() })
+        });
+        const text = await res.text();
+        if (!res.ok) {
+            result = '送信エラー: ' + text;
+            return;
+        }
+        const created = JSON.parse(text) as Message;
+
+        // 2. 自分の画面には即時反映
+        messages = [...messages, created];
+
+        // 3. WebSocket が開いていれば「新着通知」を送る（通知専用）
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({
+                type: 'message-created',
+                threadId: created.threadId,
+                message: created
+            }));
+        }
+
+        draft = '';
+    }
 </script>
 
 <div class="wrap">
@@ -148,6 +230,15 @@
     <button onclick={connectWebSocket}>
         WebSocket 接続テスト
     </button>
+    <div class="ws-send">
+        <input
+            placeholder="WebSocket で送るメッセージ..."
+            bind:value={draft}
+        />
+        <button onclick={sendMessageViaRest}>
+            WebSocket 送信
+        </button>
+    </div>
     {#if !dbUser}
         <p>ログインすると削除・編集できます。</p>
     {/if}

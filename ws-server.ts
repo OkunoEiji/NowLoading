@@ -4,10 +4,11 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { verifyToken } from '@clerk/backend';
 import 'dotenv/config';
 
+// 接続中のクライアントを管理
+const clients = new Set<WebSocket & { userId?: string }>();
+
 const server = http.createServer();
 const wss = new WebSocketServer({ noServer: true });
-
-console.log('CLERK_SECRET_KEY in ws-server:', process.env.CLERK_SECRET_KEY);
 
 server.on('upgrade', async(request, socket, head) => {
     try {
@@ -25,7 +26,7 @@ server.on('upgrade', async(request, socket, head) => {
         const claims = await verifyToken(token, {
             secretKey: process.env.CLERK_SECRET_KEY!,
         });
-        const userId = claims.sub;
+        const userId = claims.sub as string | undefined;
 
         wss.handleUpgrade(request, socket, head, (ws) => {
             (ws as any).userId = userId;
@@ -39,13 +40,59 @@ server.on('upgrade', async(request, socket, head) => {
 });
 
 wss.on('connection', (ws) => {
-    const userId = (ws as any).userId;
+    const userId = (ws as any).userId as string | undefined;
     console.log('WebSocket connected by user', userId);
 
+    const client = ws as WebSocket & { userId?: string };
+    client.userId = userId;
+    clients.add(client);
+
+    ws.on('close', () => {
+        clients.delete(client);
+    });
+
+    
     ws.on('message', (data) => {
-        console.log('recv from', userId, ':', data.toString());
+        try {
+            const msg = JSON.parse(data.toString());
+
+            if (msg.type === 'message-created') {
+                // 今回は msg.message をそのまま配信
+                for (const client of clients) {
+                    if (client.readyState === WebSocket.OPEN) {
+                        client.send(JSON.stringify(msg));
+                    }
+                }
+            }
+            // 他の type（typing など）も増やせる
+        } catch (ex) {
+            console.error('failed to handle ws message', ex);
+        }
     });
 });
+
+// // DBに保存（非同期保存関数）
+// async function saveMessageToDb(msg: {
+//     threadId: number;
+//     content: string;
+//     authorId: string;
+// }) {
+//     // Clerk の userId から自前の User.id を取得
+//     const dbUser = await prismaWs.user.findUnique({
+//         where: { clerkId: msg.authorId }
+//     });
+//     if (!dbUser) {
+//         console.warn('no local user found for clerkId', msg.authorId);
+//         return;
+//     }
+//     await prismaWs.message.create({
+//         data: {
+//             threadId: msg.threadId,
+//             authorId: dbUser.id,
+//             content: msg.content
+//         }
+//     });
+// }
 
 server.listen(3001, () => {
     console.log('WS server listening on 3001');
