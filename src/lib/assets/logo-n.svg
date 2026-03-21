@@ -1,0 +1,16 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="96"
+  height="96"
+  viewBox="0 0 96 96"
+>
+  <!-- シンプルな白のアウトライン N ロゴ -->
+  <path
+    d="M26 78V18H36L60 58V18H70V78H60L36 38V78H26Z"
+    fill="none"
+    stroke="#FFFFFF"
+    stroke-width="6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>

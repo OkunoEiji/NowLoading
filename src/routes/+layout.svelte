@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import './layout.css';
+	import '$lib/styles/logo-glow.css';
 	import favicon from '$lib/assets/favicon.svg';
 	import { ClerkProvider } from 'svelte-clerk';
 

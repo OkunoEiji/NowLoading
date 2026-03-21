@@ -54,3 +54,5 @@
     grid-template-columns: 1.1fr 1.4fr 2fr;
   }
 }
+
+/* ロゴのグローは $lib/styles/logo-glow.css（Tailwind と分離） */
