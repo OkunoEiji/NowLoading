@@ -59,7 +59,7 @@
     }
     return null;
   });
-  const dbUserId = $derived(dbUser?.id ?? null);
+  // const dbUserId = $derived(dbUser?.id ?? null);
   
   // 選択状態
   let selectedCategoryId = $state<number | null>(null);
@@ -76,6 +76,7 @@
     'disconnected'
   );
   let draft = $state('');
+  let errorMessage = $state<string | null>(null);
   let result = $state<string | null>(null);
   let lastSentMessageId = $state<number | null>(null);
   /// ロゴの WS グロー（状態と実際の socket の両方を見る＝切断レース対策）
@@ -362,6 +363,10 @@
   async function sendMessage() {
     if (!draft.trim() || !selectedThreadId) return;
     try {
+      errorMessage = null;
+      if (dbUser && wsStatus !== 'connected') {
+        throw new Error();
+      }
       const res = await fetch(`/api/threads/${selectedThreadId}/messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -383,10 +388,8 @@
       }
       draft = '';
       result = null;
-    } catch (ex) {
-      console.error('メッセージ送信失敗', ex);
-      result =
-        '送信エラー: ' + (ex instanceof Error ? ex.message : String(ex));
+    } catch {
+      errorMessage = 'メッセージ送信に失敗しました。';
     }
   }
   
@@ -621,6 +624,14 @@
       class={`flex-1 flex min-h-0 flex-col transition-all duration-200
                 ${sidebarOpen ? 'ml-0 lg:ml-64' : 'ml-0 lg:ml-12'}`}
     >
+      {#if errorMessage}
+        <div
+          class="mx-6 mb-2 shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+          role="alert"
+        >
+          {errorMessage}
+        </div>
+      {/if}
       <section class="flex-1 flex flex-col min-h-0">
         <!-- タイトル（親に overflow-hidden を付けない→ロゴの drop-shadow が切れない） -->
         <div class="px-6 pt-4 pb-2 flex items-center gap-3 shrink-0">
@@ -820,9 +831,6 @@
                       送信
                     </button>
                   </div>
-                  {#if result}
-                    <p class="text-[11px] text-red-500">{result}</p>
-                  {/if}
                 </div>
               </div>
             </div>
