@@ -5,7 +5,10 @@
   import logoN from '$lib/assets/logo-n.svg';
   import { page } from '$app/state';
   import { SignIn } from 'svelte-clerk';
-  
+  import { onDestroy, untrack } from 'svelte';
+  import { fetchClerkSessionTokenForWs } from '$lib/ws/fetch-clerk-token';
+  import { buildWebSocketUrlWithToken } from '$lib/ws/ws-url';
+
   // 型定義
   type Category = {
     id: number;
@@ -32,11 +35,31 @@
     email: string | null;
   };
 
-  // データロード
-  const { data } = $props<{
-    data: { dbUser?: DbUser | null };
-  }>();
-  const dbUser = $derived(data?.dbUser ?? null);
+  // データロード（レイアウトの dbUser と +page.server の user をマージして扱う）
+  type PageUserPayload = {
+    id: number;
+    username?: string | null;
+    email?: string | null;
+  };
+
+  const dbUser = $derived.by(() => {
+    const d = page.data as {
+      dbUser?: DbUser | null;
+      user?: PageUserPayload | null;
+    };
+    const fromLayout = d?.dbUser ?? null;
+    if (fromLayout) return fromLayout;
+    const u = d?.user;
+    if (u?.id != null) {
+      return {
+        id: u.id,
+        username: u.username ?? null,
+        email: u.email ?? null
+      } satisfies DbUser;
+    }
+    return null;
+  });
+  const dbUserId = $derived(dbUser?.id ?? null);
   
   // 選択状態
   let selectedCategoryId = $state<number | null>(null);
@@ -55,6 +78,12 @@
   let draft = $state('');
   let result = $state<string | null>(null);
   let lastSentMessageId = $state<number | null>(null);
+  /// ロゴの WS グロー（状態と実際の socket の両方を見る＝切断レース対策）
+  const logoWsGlow = $derived(
+    wsStatus === 'connecting' ||
+      wsStatus === 'connected' ||
+      (browser && socket?.readyState === WebSocket.OPEN)
+  );
   /// サイドバー開閉(PCではデフォルト開く)
   let sidebarOpen = $state(true);
 
@@ -65,14 +94,20 @@
   let showLoginModal = $state(false);
 
   const authReturnUrl = $derived(
-    `${page.url.pathname}${page.url.search}${page.url.hash}` || '/'
+    (() => {
+      const url = page.url.pathname + page.url.search + page.url.hash;
+      return url || '/';
+    })()
   );
 
   const anyModalOpen = $derived(
     showProfileModal || showLogoutConfirm || showLoginModal
   );
 
-  /** モーダル表示中は背面スクロールを止める */
+  function getClerk() : any {
+    return (globalThis as any).Clerk;
+  }
+
   $effect(() => {
     if (!browser) return;
     if (!anyModalOpen) return;
@@ -84,7 +119,6 @@
     };
   });
 
-  /** ログインモーダルでセッションが付いたら閉じてサーバーデータ再取得 */
   $effect(() => {
     if (!browser) return;
     if (!showLoginModal) return;
@@ -92,27 +126,30 @@
     let done = false;
     async function onSession() {
       if (done) return;
-      const clerk = (globalThis as any).Clerk;
+      const clerk = getClerk();
+
       if (!clerk?.session) return;
       done = true;
       showLoginModal = false;
       await invalidateAll();
+      void connectWebSocket({ silent: true });
     }
+
     const id = setInterval(() => void onSession(), 400);
-    const clerk = (globalThis as any).Clerk;
+    const clerk = getClerk();
     const unsub =
       typeof clerk?.addListener === 'function'
         ? clerk.addListener((em: { session?: unknown }) => {
             if (em?.session) void onSession();
           })
         : undefined;
+    
     return () => {
       clearInterval(id);
       if (typeof unsub === 'function') unsub();
     };
   });
 
-  /** ユーザーメニュー：外側クリックで閉じる（開いた直後の同クリックは無視するため遅延登録） */
   $effect(() => {
     if (!browser || !showUserMenu) return;
 
@@ -135,18 +172,16 @@
     };
   });
 
-  // カテゴリ一覧取得
   async function loadCategories() {
     try {
       const res = await fetch('/api/categories');
       if (!res.ok) throw new Error(await res.text());
       categories = await res.json();
-    } catch (e) {
-      console.error('failed to load categories', e);
+    } catch (ex) {
+      console.error('カテゴリ読み込み失敗', ex);
     }
   }
-  
-  // スレッド一覧取得
+
   async function loadThreads(categoryId: number) {
     selectedThreadId = null;
     messages = [];
@@ -158,14 +193,13 @@
         id: t.id,
         title: t.title,
         createdAt: t.createdAt,
-        createdByName: t.createdBy?.username ?? '名無しさん'
+        createdByName: t.createdBy?.username
       }));
-    } catch (e) {
-      console.error('failed to load threads', e);
+    } catch (ex) {
+      console.error('スレッド読み込み失敗', ex);
     }
   }
-  
-  // メッセージ一覧取得
+
   async function loadMessages(threadId: number) {
     try {
       const res = await fetch(
@@ -173,35 +207,59 @@
       );
       if (!res.ok) throw new Error(await res.text());
       messages = await res.json();
-    } catch (e) {
-      console.error('failed to load messages', e);
+    } catch (ex) {
+      console.error('メッセージ読み込み失敗', ex);
     }
   }
   
   $effect(() => {
     loadCategories();
   });
-  
-  // WebSocket 接続
-  async function connectWebSocket() {
-    if (!browser) return;
-    if (wsStatus === 'connected' || wsStatus === 'connecting') return;
 
-    wsStatus = 'connecting';
-    result = null;
-    
-    const clerk = (globalThis as any).Clerk;
-    const token = await clerk?.session?.getToken();
-    if (!token) {
-      wsStatus = 'disconnected';
-      result =
-        'WebSocket: トークン取得に失敗しました。（未ログインか Clerk 未初期化）';
+  async function connectWebSocket(opts?: { silent?: boolean }) {
+    if (!browser) return;
+
+    if (
+      untrack(
+        () =>
+        wsStatus === 'connected'
+        || wsStatus === 'connecting'
+        || socket?.readyState === WebSocket.OPEN
+      )
+    ) {
       return;
     }
 
-    const ws = new WebSocket(
-      `ws://localhost:3001/ws?token=${encodeURIComponent(token)}`
-    );
+    wsStatus = 'connecting';
+    if (!opts?.silent) result = null;
+
+    const token = await fetchClerkSessionTokenForWs();
+    if (!token) {
+      wsStatus = 'disconnected';
+      if (!opts?.silent) {
+        result =
+          'WebSocket: トークン取得に失敗しました。（未ログインか Clerk 未初期化）';
+      }
+      return;
+    }
+
+    let ws: WebSocket;
+    try {
+      const url = buildWebSocketUrlWithToken(token);
+      if (import.meta.env.DEV) {
+        try {
+          const { hostname, port } = new URL(url.replace(/^ws/i, 'http'));
+          console.debug('[ws] opening', `${hostname}:${port || (url.startsWith('wss') ? '443' : '80')}`);
+        } catch {
+          console.debug('[ws] opening (url parse skipped)');
+        }
+      }
+      ws = new WebSocket(url);
+    } catch (ex) {
+      console.error('WebSocket の生成に失敗', ex);
+      wsStatus = 'disconnected';
+      return;
+    }
     socket = ws;
 
     ws.onopen = () => {
@@ -219,8 +277,8 @@
           }
           messages = [...messages, created];
         }
-      } catch (e) {
-        console.error('failed to parse ws message', e);
+      } catch (ex) {
+        console.error('WebSocketメッセージ解析失敗', ex);
       }
     };
 
@@ -235,8 +293,72 @@
       result = 'WebSocket 接続エラーが発生しました。';
     };
   }
-  
-  // メッセージ送信（REST → WS 通知）
+
+  function disconnectWebSocket() {
+    if (!browser) return;
+
+    try {
+      socket?.close();
+    } catch(ex) {
+      console.warn('WebSocket切断失敗', ex);
+    }
+    socket = null;
+    wsStatus = 'disconnected';
+  }
+
+  /**
+   * WS はサーバー側で JWT のみ検証する。Clerk セッションがあれば接続を試す。
+   * （page.data の dbUser が遅れて null のままの瞬間に切ってしまうと Network に WS が現れない）
+   */
+  $effect(() => {
+    if (!browser) return;
+
+    let canceled = false;
+    const tryAutoConnect = () => {
+      if (canceled) return;
+      const clerk = getClerk();
+      if (!clerk?.session) return;
+      if (
+        untrack(
+          () =>
+            socket?.readyState === WebSocket.OPEN ||
+            wsStatus === 'connected' ||
+            wsStatus === 'connecting'
+        )
+      ) {
+        return;
+      }
+      void connectWebSocket({ silent: true });
+    };
+
+    const clerk = getClerk();
+    const unsub =
+      typeof clerk?.addListener === 'function'
+        ? clerk.addListener((em: { session?: unknown }) => {
+            if (!em?.session) {
+              disconnectWebSocket();
+              return;
+            }
+            tryAutoConnect();
+          })
+        : undefined;
+
+    // ハイドレーション直後は session がまだのことがあるので複数フレームで試す
+    queueMicrotask(tryAutoConnect);
+    requestAnimationFrame(tryAutoConnect);
+    const t = window.setTimeout(tryAutoConnect, 500);
+
+    return () => {
+      canceled = true;
+      clearTimeout(t);
+      if (typeof unsub === 'function') unsub();
+    };
+  });
+
+  onDestroy(() => {
+    if (browser) disconnectWebSocket();
+  });
+
   async function sendMessage() {
     if (!draft.trim() || !selectedThreadId) return;
     try {
@@ -261,23 +383,23 @@
       }
       draft = '';
       result = null;
-    } catch (e) {
-      console.error('sendMessage error', e);
+    } catch (ex) {
+      console.error('メッセージ送信失敗', ex);
       result =
-        '送信エラー: ' + (e instanceof Error ? e.message : String(e));
+        '送信エラー: ' + (ex instanceof Error ? ex.message : String(ex));
     }
   }
   
-  function handleCategoryClick(cat: Category) {
-    selectedCategoryId = cat.id;
+  function handleCategoryClick(category: Category) {
+    selectedCategoryId = category.id;
     selectedThreadId = null;
     messages = [];
-    loadThreads(cat.id);
+    loadThreads(category.id);
   }
   
-  function handleThreadClick(th: Thread) {
-    selectedThreadId = th.id;
-    loadMessages(th.id);
+  function handleThreadClick(thread: Thread) {
+    selectedThreadId = thread.id;
+    loadMessages(thread.id);
   }
   
   function handleBackToCategories() {
@@ -294,7 +416,6 @@
 </script>
 
 <div class="min-h-screen flex flex-col bg-gradient-to-br from-gray-50 via-blue-50 to-purple-50">
-  <!-- 親に overflow-hidden を付けない（サイドバー右にはみ出すメニューが切れないように） -->
   <div class="flex-1 flex min-h-0">
     <!-- サイドバー -->
     <aside
@@ -496,18 +617,20 @@
       {/if}
     </aside>
     <!-- メインコンテンツ -->
-    <div class={`flex-1 flex min-h-0 overflow-hidden transition-all duration-200
-                ${sidebarOpen ? 'ml-0 lg:ml-64' : 'ml-0 lg:ml-12'}`}>
-      <section class="flex-1 flex flex-col">
-        <!-- タイトル -->
-        <div class="px-6 pt-4 pb-2 flex items-center gap-3">
+    <div
+      class={`flex-1 flex min-h-0 flex-col transition-all duration-200
+                ${sidebarOpen ? 'ml-0 lg:ml-64' : 'ml-0 lg:ml-12'}`}
+    >
+      <section class="flex-1 flex flex-col min-h-0">
+        <!-- タイトル（親に overflow-hidden を付けない→ロゴの drop-shadow が切れない） -->
+        <div class="px-6 pt-4 pb-2 flex items-center gap-3 shrink-0">
           <div
-            class="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center"
+            class="w-9 h-9 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center overflow-visible ring-0"
           >
             <img
               src={logoN}
               alt="NowLoading logo"
-              class={`w-5 h-5 n-logo ${wsStatus !== 'disconnected' ? 'n-logo--glow' : ''}`}
+              class={`w-5 h-5 n-logo ${logoWsGlow ? 'n-logo--glow' : ''}`}
             />
           </div>
           <div class="flex flex-col">
@@ -525,23 +648,11 @@
             </span>
           </div>
           <div class="flex-1"></div>
-          <button
-            type="button"
-            class="text-[11px] px-3 py-1 rounded-full border
-                   {wsStatus === 'connected'
-                     ? 'border-green-500 text-green-600'
-                     : wsStatus === 'connecting'
-                       ? 'border-yellow-500 text-yellow-600'
-                       : 'border-gray-300 text-gray-500'}"
-            onclick={connectWebSocket}
-          >
-            WS: {wsStatus}
-          </button>
         </div>
-        <!-- メインコンテンツ -->
-        <div class="flex-1 flex flex-col">
+        <!-- メインコンテンツ（スクロール領域だけクリップ） -->
+        <div class="flex-1 flex flex-col min-h-0 overflow-hidden">
           <!-- コンテンツ -->
-          <div class="flex-1 overflow-y-auto">
+          <div class="flex-1 overflow-y-auto min-h-0">
             <!-- カテゴリ選択 -->
             {#if !selectedCategoryId}
               <div class="flex flex-col items-center justify-center h-full px-4">
@@ -550,7 +661,7 @@
                     <img
                       src={logoN}
                       alt="NowLoading logo"
-                      class={`n-logo ${wsStatus !== 'disconnected' ? 'n-logo--glow' : ''}`}
+                      class={`n-logo ${logoWsGlow ? 'n-logo--glow' : ''}`}
                     />
                   </div>
                   <h1 class="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
@@ -688,7 +799,7 @@
               </div>
             {/if}
           </div>
-          {#if selectedThreadId}
+          {#if selectedThreadId && dbUser}
             <!-- 入力エリア（メッセージ画面＝スレッド選択時のみ） -->
             <div class="border-t border-gray-200 bg-white/90 backdrop-blur-md">
               <div class="max-w-3xl mx-auto px-6 py-3">
@@ -823,6 +934,7 @@
             type="button"
             class="px-4 py-2 text-xs rounded-lg bg-red-500 text-white hover:bg-red-600"
             onclick={async () => {
+              disconnectWebSocket();
               const clerk = (globalThis as any).Clerk;
               await clerk?.signOut?.();
               showLogoutConfirm = false;
