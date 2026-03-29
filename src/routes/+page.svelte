@@ -1,7 +1,8 @@
 <script lang="ts">
   import { browser } from '$app/environment';
+  import { enhance } from '$app/forms';
   import { invalidateAll } from '$app/navigation';
-  import { PanelLeftOpen, PanelRight } from 'lucide-svelte';
+  import { PanelLeftOpen, PanelRight, Save } from 'lucide-svelte';
   import logoN from '$lib/assets/logo-n.svg';
   import { page } from '$app/state';
   import { SignIn } from 'svelte-clerk';
@@ -9,7 +10,6 @@
   import { fetchClerkSessionTokenForWs } from '$lib/ws/fetch-clerk-token';
   import { buildWebSocketUrlWithToken } from '$lib/ws/ws-url';
 
-  // 型定義
   type Category = {
     id: number;
     name: string;
@@ -34,32 +34,65 @@
     username: string | null;
     email: string | null;
   };
-
-  // データロード（レイアウトの dbUser と +page.server の user をマージして扱う）
+  type LayoutDbUser = {
+    id: number;
+    username: string;
+    email: string;
+    birthDate: Date | string;
+    postalCode: string;
+    prefectureCity: string;
+  };
   type PageUserPayload = {
     id: number;
     username?: string | null;
     email?: string | null;
+    birthDate?: Date | string | null;
+    postalCode?: string | null;
+    prefectureCity?: string | null;
+  };
+  type HomePageData = {
+    dbUser?: LayoutDbUser | null;
+    user?: PageUserPayload | null;
   };
 
-  const dbUser = $derived.by(() => {
-    const d = page.data as {
-      dbUser?: DbUser | null;
-      user?: PageUserPayload | null;
-    };
-    const fromLayout = d?.dbUser ?? null;
-    if (fromLayout) return fromLayout;
-    const u = d?.user;
-    if (u?.id != null) {
+  const dbUser = $derived.by((): DbUser | null => {
+    const pageData = page.data as HomePageData;
+    const layoutDbUser = pageData.dbUser ?? null;
+    if (layoutDbUser) {
       return {
-        id: u.id,
-        username: u.username ?? null,
-        email: u.email ?? null
-      } satisfies DbUser;
+        id: layoutDbUser.id,
+        username: layoutDbUser.username ?? null,
+        email: layoutDbUser.email ?? null
+      };
+    }
+    const pageLoadUser = pageData.user;
+    if (pageLoadUser?.id != null) {
+      return {
+        id: pageLoadUser.id,
+        username: pageLoadUser.username ?? null,
+        email: pageLoadUser.email ?? null
+      };
     }
     return null;
   });
-  // const dbUserId = $derived(dbUser?.id ?? null);
+
+  const fullProfileUser = $derived.by((): LayoutDbUser | null => {
+    const pageData = page.data as HomePageData;
+    if (pageData.dbUser) return pageData.dbUser;
+    const pageLoadUser = pageData.user;
+    if (pageLoadUser?.id == null) return null;
+    const defaultBirthDate = pageLoadUser.birthDate
+      ? new Date(pageLoadUser.birthDate as string | Date)
+      : new Date('2000-01-01');
+    return {
+      id: pageLoadUser.id,
+      username: (pageLoadUser.username ?? '') as string,
+      email: (pageLoadUser.email ?? '') as string,
+      birthDate: pageLoadUser.birthDate ?? defaultBirthDate,
+      postalCode: pageLoadUser.postalCode ?? '',
+      prefectureCity: pageLoadUser.prefectureCity ?? ''
+    };
+  });
   
   // 選択状態
   let selectedCategoryId = $state<number | null>(null);
@@ -93,6 +126,49 @@
   let showProfileModal = $state(false);
   let showLogoutConfirm = $state(false);
   let showLoginModal = $state(false);
+
+  let profileUsername = $state('');
+  let profileBirthYear = $state(2000);
+  let profileBirthMonth = $state(1);
+  let profileBirthDay = $state(1);
+  let profilePostalCode = $state('');
+  let profilePrefectureCity = $state('');
+  let profileZipError = $state<string | null>(null);
+  let profileModalMessage = $state<string | null>(null);
+
+  $effect(() => {
+    if (!browser) return;
+    if (!showProfileModal || !fullProfileUser) return;
+    const row = fullProfileUser;
+    const bd = new Date(row.birthDate);
+    profileUsername = row.username ?? '';
+    profileBirthYear = bd.getFullYear();
+    profileBirthMonth = bd.getMonth() + 1;
+    profileBirthDay = bd.getDate();
+    profilePostalCode = row.postalCode ?? '';
+    profilePrefectureCity = row.prefectureCity ?? '';
+    profileZipError = null;
+    profileModalMessage = null;
+  });
+
+  async function fetchAddressFromZipModal() {
+    profileZipError = null;
+    const zip = profilePostalCode.replace(/[^\d]/g, '');
+    if (zip.length < 7) {
+      profileZipError = '7桁の郵便番号を入力してください。';
+      return;
+    }
+    const res = await fetch(
+      `https://api.zipaddress.net/?zipcode=${encodeURIComponent(zip)}`
+    );
+    const json = await res.json();
+    if (json.code !== 200 || !json.data) {
+      profileZipError =
+        '住所が見つかりませんでした。郵便番号を確認してください。';
+      return;
+    }
+    profilePrefectureCity = `${json.data.pref}${json.data.city}${json.data.town ?? ''}`;
+  }
 
   const authReturnUrl = $derived(
     (() => {
@@ -840,7 +916,7 @@
     </div>
   </div>
   <!-- ========== 【修正 C】設定モーダル ========== -->
-  {#if showProfileModal}
+  {#if showProfileModal && fullProfileUser}
     <div
       class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-[2px] p-4"
       role="presentation"
@@ -856,25 +932,52 @@
       }}
     >
       <div
-        class="w-full max-w-md bg-white rounded-2xl shadow-xl p-6"
+        class="w-full max-w-md max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-xl p-6"
         role="dialog"
         tabindex="-1"
         aria-modal="true"
         aria-labelledby="profile-modal-title"
+        onclick={(e) => e.stopPropagation()}
+        onkeydown={(e) => e.stopPropagation()}
       >
         <h2 id="profile-modal-title" class="text-lg font-semibold mb-4">
           ユーザー設定
         </h2>
-        {#if dbUser}
-          <div class="space-y-3 text-sm">
+        {#if fullProfileUser}
+          <form
+            method="POST"
+            action="/settings/profile?/save"
+            class="space-y-3 text-sm"
+            use:enhance={() => {
+              return async ({ result, update }) => {
+                if (result.type === 'failure') {
+                  const data = result.data as { message?: string } | undefined;
+                  profileModalMessage = data?.message ?? '保存に失敗しました。';
+                  await update();
+                  return;
+                }
+                profileModalMessage = null;
+                await update();
+                if (result.type === 'redirect') {
+                  await invalidateAll();
+                  showProfileModal = false;
+                }
+              };
+            }}
+          >
+            {#if profileModalMessage}
+              <p class="text-sm text-red-500">{profileModalMessage}</p>
+            {/if}
             <div>
               <label class="block text-xs font-medium mb-1" for="profile-username">ユーザー名</label>
               <input
                 id="profile-username"
+                name="username"
                 type="text"
-                value={dbUser.username ?? ''}
-                class="w-full px-3 py-2 rounded-lg border border-gray-300 bg-gray-50 text-sm"
-                disabled
+                bind:value={profileUsername}
+                class="w-full px-3 py-2 rounded-lg border border-gray-300 bg-white text-sm"
+                placeholder="ユーザー名"
+                required
               />
             </div>
             <div>
@@ -882,25 +985,97 @@
               <input
                 id="profile-email"
                 type="email"
-                value={dbUser.email ?? ''}
-                class="w-full px-3 py-2 rounded-lg border border-gray-300 bg-gray-50 text-sm"
+                value={fullProfileUser.email ?? ''}
                 disabled
+                class="w-full px-3 py-2 rounded-lg border border-gray-300 bg-gray-100 text-sm text-gray-500 cursor-not-allowed"
               />
             </div>
-            <p class="text-[11px] text-gray-500">
-              プロフィールの詳細編集は今後追加予定です。
-            </p>
-          </div>
+            <div>
+              <p class="block text-xs font-medium mb-1">生年月日</p>
+              <div class="flex gap-2 flex-wrap">
+                <input
+                  name="birthYear"
+                  type="number"
+                  bind:value={profileBirthYear}
+                  class="min-w-[4.5rem] flex-1 px-2 py-2 rounded-lg border border-gray-300 text-sm"
+                  placeholder="年"
+                  required
+                />
+                <input
+                  name="birthMonth"
+                  type="number"
+                  bind:value={profileBirthMonth}
+                  class="min-w-[4rem] flex-1 px-2 py-2 rounded-lg border border-gray-300 text-sm"
+                  min="1"
+                  max="12"
+                  required
+                />
+                <input
+                  name="birthDay"
+                  type="number"
+                  bind:value={profileBirthDay}
+                  class="min-w-[4rem] flex-1 px-2 py-2 rounded-lg border border-gray-300 text-sm"
+                  min="1"
+                  max="31"
+                  required
+                />
+              </div>
+            </div>
+            <div>
+              <label class="block text-xs font-medium mb-1" for="profile-postal">郵便番号</label>
+              <div class="flex gap-2 flex-wrap items-start">
+                <input
+                  id="profile-postal"
+                  name="postalCode"
+                  type="text"
+                  bind:value={profilePostalCode}
+                  class="flex-1 min-w-[8rem] px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                  maxlength="7"
+                  inputmode="numeric"
+                  required
+                />
+                <button
+                  type="button"
+                  class="px-3 py-2 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 text-xs shrink-0"
+                  onclick={fetchAddressFromZipModal}
+                >
+                  住所検索
+                </button>
+              </div>
+              {#if profileZipError}
+                <p class="text-xs text-red-500 mt-1">{profileZipError}</p>
+              {/if}
+            </div>
+            <div>
+              <label class="block text-xs font-medium mb-1" for="profile-address">住所（都道県市区町村）</label>
+              <input
+                id="profile-address"
+                name="prefectureCity"
+                type="text"
+                bind:value={profilePrefectureCity}
+                class="w-full px-3 py-2 rounded-lg border border-gray-300 text-sm"
+                placeholder="都道府県・市区町村"
+                required
+              />
+            </div>
+            <div class="flex w-full justify-between items-center gap-2 pt-2">
+              <button
+                type="button"
+                class="px-4 py-2 text-xs rounded-lg border border-gray-300 hover:bg-gray-50"
+                onclick={() => (showProfileModal = false)}
+              >
+                閉じる
+              </button>
+              <button
+                type="submit"
+                class="px-4 py-2 text-xs rounded-lg bg-gradient-to-r from-blue-500 to-purple-600 text-white flex items-center gap-1.5 font-medium"
+              >
+                <Save class="w-3.5 h-3.5" />
+                保存
+              </button>
+            </div>
+          </form>
         {/if}
-        <div class="mt-6 flex justify-end gap-2">
-          <button
-            type="button"
-            class="px-4 py-2 text-xs rounded-lg border border-gray-300 hover:bg-gray-50"
-            onclick={() => (showProfileModal = false)}
-          >
-            閉じる
-          </button>
-        </div>
       </div>
     </div>
   {/if}

@@ -55,7 +55,7 @@
 <main class="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50 to-purple-50 text-gray-900">
 	<section class="max-w-3xl mx-auto px-6 py-8 pb-24">
 		<!-- プロフィール設定カード -->
-		<form method="POST" class="bg-white rounded-2xl p-8 border border-gray-200 shadow-lg space-y-8">
+		<form method="POST" action="?/save" class="bg-white rounded-2xl p-8 border border-gray-200 shadow-lg space-y-8">
 			<div class="flex items-center gap-3 mb-2">
 				<div class="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-xl flex items-center justify-center">
 					<User class="w-5 h-5" />

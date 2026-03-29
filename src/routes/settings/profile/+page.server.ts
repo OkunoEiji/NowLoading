@@ -39,7 +39,7 @@ export const load: PageServerLoad = async (event) => {
 };
 
 export const actions: Actions = {
-	default: async (event) => {
+	save: async (event) => {
 		const auth = event.locals.auth?.();
 		const userId = auth?.userId;
 		if (!userId) {
