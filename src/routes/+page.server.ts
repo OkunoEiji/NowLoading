@@ -1,5 +1,4 @@
 import type { PageServerLoad } from './$types';
-import { redirect } from '@sveltejs/kit';
 import { prisma } from '$lib/server/prisma';
 
 export const load: PageServerLoad = async (event) => {
@@ -17,10 +16,9 @@ export const load: PageServerLoad = async (event) => {
         where: { clerkId: userId }
     });
 
-    // 住所未設定なら初期設定ページへリダイレクト
-    if (!dbUser?.postalCode || !dbUser?.prefectureCity) {
-		throw redirect(302, '/settings/profile');
-	}
+    if (!dbUser) {
+        return {};
+    }
 
     // それ以外は通常のトップページデータを返す
 	return {

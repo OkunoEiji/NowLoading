@@ -93,6 +93,21 @@
       prefectureCity: pageLoadUser.prefectureCity ?? ''
     };
   });
+
+  const profileIncomplete = $derived.by(() => {
+    const user = fullProfileUser;
+    if (!user) return false;
+    const postalCode = (user.postalCode ?? '').trim();
+    const prefectureCity = (user.prefectureCity ?? '').trim();
+    return !postalCode || !prefectureCity;
+  });
+
+  $effect(() => {
+    if (!browser) return;
+    if (!fullProfileUser) return;
+    if (!profileIncomplete) return;
+    showProfileModal = true;
+  });
   
   // 選択状態
   let selectedCategoryId = $state<number | null>(null);
@@ -921,12 +936,15 @@
       class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-[2px] p-4"
       role="presentation"
       onclick={(e) => {
-        if (e.target === e.currentTarget) showProfileModal = false;
+        if (e.target !== e.currentTarget) return;
+        if (profileIncomplete) return;
+        showProfileModal = false;
       }}
       onkeydown={(e) => {
         if (e.target !== e.currentTarget) return;
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
+          if (profileIncomplete) return;
           showProfileModal = false;
         }
       }}
@@ -1062,7 +1080,14 @@
               <button
                 type="button"
                 class="px-4 py-2 text-xs rounded-lg border border-gray-300 hover:bg-gray-50"
-                onclick={() => (showProfileModal = false)}
+                class:opacity-50={profileIncomplete}
+                class:cursor-not-allowed={profileIncomplete}
+                onclick={() => {
+                  if (profileIncomplete) return;
+                  showProfileModal = false;
+                }}
+                disabled={profileIncomplete}
+                aria-disabled={profileIncomplete}
               >
                 閉じる
               </button>
