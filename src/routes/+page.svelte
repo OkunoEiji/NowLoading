@@ -875,22 +875,36 @@
                         </div>
                       </div>
                     {:else}
-                      {#each messages as msg}
-                        <div class="flex gap-3">
-                          <div class="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-white text-[11px] font-bold flex-shrink-0">
-                            {(msg.authorUserName ?? '？').slice(0, 2)}
-                          </div>
-                          <div class="flex-1">
-                            <div class="flex items-center gap-2">
-                              <span class="text-xs font-semibold text-gray-800">
-                                {msg.authorUserName ?? '名無しさん'}
-                              </span>
-                              <span class="text-[10px] text-gray-400">
-                                {new Date(msg.updatedAt).toLocaleString()}
-                              </span>
-                            </div>
-                            <div class="mt-1 rounded-2xl bg-white/90 border border-gray-200 px-4 py-3 text-sm text-gray-800 whitespace-pre-wrap">
-                              {msg.content}
+                      {#each messages as message}
+                        {@const IsOwnMessage = dbUser != null && message.authorId === dbUser.id}
+
+                        <div class="flex w-full {IsOwnMessage ? 'justify-end' : 'justify-start'}">
+                          <div class="max-w-[min(100%,28rem)] {IsOwnMessage ? 'flex flex-col items-end' : 'flex flex-row gap-3'}">
+                            {#if !IsOwnMessage}
+                              <div class="w-8 h-8 rounded-full bg-gray-400 flex items-center justify-center text-white text-[11px] font-bold flex-shrink-0">
+                                {(message.authorUserName ?? '？').slice(0, 2)}
+                              </div>
+                            {/if}
+
+                            <div class="min-w-0 {IsOwnMessage ? '' : 'flex-1'}">
+                              <div class="flex items-center gap-2 {IsOwnMessage ? 'justify-end' : 'justify-start'}">
+                                {#if !IsOwnMessage}
+                                  <span class="text-xs font-semibold text-gray-800">
+                                    {message.authorUserName}
+                                  </span>
+                                {/if}
+                                <span class="text-[10px] text-gray-400">
+                                  {new Date(message.updatedAt).toLocaleString()}
+                                </span>
+                              </div>
+                              
+                              <div
+                                class="mt-1 rounded-2xl px-4 py-3 text-sm whitespace-pre-wrap {IsOwnMessage
+                                  ? 'bg-white/90 border border-gray-200 text-gray-800'
+                                  : 'bg-gray-100 border border-gray-200 text-gray-800'}"
+                              >
+                                {message.content}
+                              </div>
                             </div>
                           </div>
                         </div>
